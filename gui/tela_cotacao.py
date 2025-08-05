@@ -1,18 +1,17 @@
 import tkinter as tk
 import requests
 from api.coingecko_api import buscar_preco_cripto
+from datetime import datetime
 
 def mostrar_tela_cotacao(root, voltar_tela):
     for widget in root.winfo_children():
         widget.destroy()
 
-    # 🎨 Estilo
     bg_color = "#f0f4f8"
     accent_color = "#0077b6"
     text_color = "#333"
     root.configure(bg=bg_color)
 
-    # 🔤 Título
     tk.Label(
         root,
         text="💰 Consultar Criptomoeda",
@@ -21,16 +20,13 @@ def mostrar_tela_cotacao(root, voltar_tela):
         bg=bg_color
     ).pack(pady=20)
 
-    # 🧾 Campo de entrada
     entrada = tk.Entry(root, font=("Segoe UI", 12), width=25, relief="solid", bd=1)
     entrada.insert(0, "bitcoin")
     entrada.pack(pady=8)
 
-    # 🖼 Resultado da busca
     resultado = tk.Label(root, text="", font=("Segoe UI", 12), bg=bg_color)
     resultado.pack(pady=10)
 
-    # 🔎 Função buscar cripto específica
     def buscar():
         cripto = entrada.get().lower()
         preco = buscar_preco_cripto(cripto)
@@ -42,9 +38,11 @@ def mostrar_tela_cotacao(root, voltar_tela):
         else:
             resultado.config(text="❌ Ativo não encontrado ou erro na API", fg="red")
 
-    # 🔘 Botão buscar
+    botoes_frame = tk.Frame(root, bg=bg_color)
+    botoes_frame.pack(pady=10)
+
     tk.Button(
-        root,
+        botoes_frame,
         text="Buscar",
         command=buscar,
         font=("Segoe UI", 11),
@@ -54,22 +52,20 @@ def mostrar_tela_cotacao(root, voltar_tela):
         activebackground="#023e8a",
         padx=15,
         pady=5
-    ).pack(pady=5)
+    ).pack(side="left", padx=5)
 
-    # 🔙 Botão voltar
     tk.Button(
-        root,
+        botoes_frame,
         text="Voltar",
         command=voltar_tela,
-        font=("Segoe UI", 10),
+        font=("Segoe UI", 11),
         bg="#ced4da",
         fg="black",
         relief="flat",
-        padx=10,
-        pady=3
-    ).pack(pady=10)
+        padx=15,
+        pady=5
+    ).pack(side="left", padx=5)
 
-        # 📊 Cotações populares com atualização automática
     cotacoes_label = tk.Label(
         root,
         text="Carregando cotações...",
@@ -97,7 +93,6 @@ def mostrar_tela_cotacao(root, voltar_tela):
             "vs_currencies": "brl,usd"
         }
 
-        # Mostra indicador de atualização
         status_label.config(text="🔄 Atualizando...")
 
         try:
@@ -105,7 +100,7 @@ def mostrar_tela_cotacao(root, voltar_tela):
             res.raise_for_status()
             data = res.json()
 
-            texto = "📊 Cotações populares (atualiza a cada 1 min.):\n\n"
+            texto = "📊 Cotações populares (atualiza a cada 30 seg.):\n\n"
             for ativo in ativos:
                 brl = data[ativo]["brl"]
                 usd = data[ativo]["usd"]
@@ -113,17 +108,17 @@ def mostrar_tela_cotacao(root, voltar_tela):
 
             cotacoes_label.config(text=texto)
 
-            # Mostra horário da última atualização
-            from datetime import datetime
             agora = datetime.now().strftime("%H:%M:%S")
             status_label.config(text=f"✅ Última atualização: {agora}")
 
         except Exception as e:
-            # Silencia erro visual, mas mostra no terminal
             print(f"[Erro API] {e}")
-            # Mantém o texto anterior e continua tentando
             status_label.config(text="⚠️ Tentando novamente...")
 
-        root.after(30000, atualizar_ativos)  # Repetição automática
+
+
+
+
+        root.after(30000, atualizar_ativos)
 
     atualizar_ativos()
