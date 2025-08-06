@@ -8,6 +8,18 @@ import matplotlib.dates as mdates
 import numpy as np
 from matplotlib.patches import Rectangle
 import seaborn as sns
+import sqlite3
+import os
+import matplotlib.dates as mpdates
+import time  # Adicionar para rate limiting
+
+# Tentar importar mplfinance, se não conseguir, usar implementação alternativa
+try:
+    from mplfinance.original_flavor import candlestick_ohlc
+    MPLFINANCE_AVAILABLE = True
+except ImportError:
+    MPLFINANCE_AVAILABLE = False
+    print("mplfinance não disponível, usando gráficos de linha apenas")
 
 # Configurar estilo profissional para os gráficos
 plt.style.use("seaborn-v0_8-darkgrid")
@@ -19,7 +31,214 @@ class CryptoChartApp:
         self.root = root
         self.current_crypto = "bitcoin"
         self.chart_canvas = None
+        self.chart_type = "candlestick"  # Sempre candlestick
+        self.cache = {}  # Cache para dados da API
+        self.last_request_time = 0  # Controle de rate limiting
+        self.setup_database()
         self.setup_ui()
+        self.setup_responsive_layout()
+        
+        # Limpar cache periodicamente para evitar vazamento de memória
+        self.root.after(300000, self.clear_old_cache)  # Limpar a cada 5 minutos
+
+    def make_api_request(self, url, params=None, max_retries=2):
+        """Faz requisição à API com cache e rate limiting otimizado"""
+        # Criar chave do cache
+        cache_key = f"{url}_{str(params)}"
+        
+        # Verificar cache (válido por 5 minutos para melhor performance)
+        current_time = time.time()
+        if cache_key in self.cache:
+            cached_data, cache_time = self.cache[cache_key]
+            if current_time - cache_time < 300:  # Cache válido por 5 minutos
+                return cached_data
+        
+        # Rate limiting: esperar apenas 0.5 segundos entre requisições
+        time_since_last = current_time - self.last_request_time
+        if time_since_last < 0.5:
+            time.sleep(0.5 - time_since_last)
+        
+        # Fazer requisição com retry otimizado
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(url, params=params, timeout=8)  # Timeout reduzido
+                response.raise_for_status()
+                data = response.json()
+                
+                # Salvar no cache
+                self.cache[cache_key] = (data, current_time)
+                self.last_request_time = time.time()
+                
+                return data
+                
+            except requests.exceptions.RequestException as e:
+                print(f"Tentativa {attempt + 1} falhou: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)  # Delay fixo menor
+                else:
+                    print(f"Todas as tentativas falharam para {url}")
+                    return None
+
+    def clear_old_cache(self):
+        """Limpa cache antigo para evitar vazamento de memória"""
+        current_time = time.time()
+        keys_to_remove = []
+        
+        for key, (data, cache_time) in self.cache.items():
+            if current_time - cache_time > 600:  # Remover cache mais antigo que 10 minutos
+                keys_to_remove.append(key)
+        
+        for key in keys_to_remove:
+            del self.cache[key]
+        
+        # Agendar próxima limpeza
+        self.root.after(300000, self.clear_old_cache)
+
+    def force_clear_cache(self):
+        """Força limpeza completa do cache"""
+        self.cache.clear()
+        self.last_request_time = 0
+        print("Cache limpo forçadamente")
+
+    def setup_database(self):
+        """Configura o banco de dados SQLite3"""
+        os.makedirs("database", exist_ok=True)  # Garante que a pasta exista
+        self.db_path = os.path.join("database", "crypto_history.db")
+        self.conn = sqlite3.connect(self.db_path)
+        self.cursor = self.conn.cursor()
+
+        
+        # Criar tabela se não existir
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS search_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                crypto_name TEXT NOT NULL,
+                search_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                price_usd REAL,
+                price_brl REAL,
+                change_24h REAL
+            )
+        ''')
+        self.conn.commit()
+
+    def save_search_history(self, crypto_name, price_data):
+        """Salva histórico de busca no banco de dados"""
+        try:
+            usd_price = price_data.get("usd", 0)
+            brl_price = price_data.get("brl", 0)
+            change_24h = price_data.get("usd_24h_change", 0)
+            
+            self.cursor.execute('''
+                INSERT INTO search_history (crypto_name, price_usd, price_brl, change_24h)
+                VALUES (?, ?, ?, ?)
+            ''', (crypto_name, usd_price, brl_price, change_24h))
+            self.conn.commit()
+        except Exception as e:
+            print(f"Erro ao salvar histórico: {e}")
+
+    def get_search_history(self):
+        """Obtém histórico de buscas"""
+        try:
+            self.cursor.execute('''
+                SELECT crypto_name, search_date, price_usd, price_brl, change_24h
+                FROM search_history
+                ORDER BY search_date DESC
+                LIMIT 50
+            ''')
+            return self.cursor.fetchall()
+        except Exception as e:
+            print(f"Erro ao buscar histórico: {e}")
+            return []
+
+    def show_history_window(self):
+        """Mostra janela com histórico de consultas"""
+        import tkinter.ttk as ttk
+        history_window = tk.Toplevel(self.root)
+        history_window.title("📊 Histórico de Consultas")
+        history_window.geometry("800x600")
+        history_window.configure(bg="#1e1e2e")
+        
+        # Centralizar janela
+        history_window.transient(self.root)
+        history_window.grab_set()
+        
+        # Header
+        header_label = tk.Label(
+            history_window,
+            text="📊 Histórico de Consultas",
+            font=("Segoe UI", 16, "bold"),
+            fg="#89b4fa",
+            bg="#1e1e2e"
+        )
+        header_label.pack(pady=10)
+        
+        # Frame para lista
+        list_frame = tk.Frame(history_window, bg="#313244")
+        list_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        # Criar Treeview para exibir histórico
+        columns = ("Cripto", "Data", "Preço USD", "Preço BRL", "Variação 24h")
+        tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=20)
+        
+        # Configurar colunas
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=120, anchor="center")
+        
+        # Adicionar scrollbar
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Buscar e exibir histórico
+        history_data = self.get_search_history()
+        for row in history_data:
+            crypto_name, search_date, price_usd, price_brl, change_24h = row
+            try:
+                # Formatar data
+                date_obj = datetime.fromisoformat(search_date.replace('Z', '+00:00'))
+                formatted_date = date_obj.strftime("%d/%m/%Y %H:%M")
+            except Exception:
+                formatted_date = search_date
+            # Formatar preços
+            formatted_usd = f"${price_usd:,.4f}" if price_usd else "N/A"
+            formatted_brl = f"R$ {price_brl:,.2f}" if price_brl else "N/A"
+            formatted_change = f"{change_24h:+.2f}%" if change_24h else "N/A"
+            tree.insert("", "end", values=(
+                crypto_name.upper(),
+                formatted_date,
+                formatted_usd,
+                formatted_brl,
+                formatted_change
+            ))
+        
+        # Botão fechar
+        close_button = tk.Button(
+            history_window,
+            text="Fechar",
+            command=history_window.destroy,
+            font=("Segoe UI", 11, "bold"),
+            bg="#585b70",
+            fg="#cdd6f4",
+            relief="flat",
+            padx=20,
+            pady=8,
+            cursor="hand2"
+        )
+        close_button.pack(pady=10)
+
+    def setup_responsive_layout(self):
+        """Configura o layout responsivo"""
+        # Configurar grid weights para responsividade
+        self.root.grid_rowconfigure(0, weight=0)  # Header
+        self.root.grid_rowconfigure(1, weight=0)  # Search
+        self.root.grid_rowconfigure(2, weight=0)  # Info
+        self.root.grid_rowconfigure(3, weight=1)  # Chart (expandable)
+        self.root.grid_rowconfigure(4, weight=0)  # Status
+        
+        self.root.grid_columnconfigure(0, weight=1)
 
     def setup_ui(self):
         """Configura a interface do usuário"""
@@ -31,24 +250,29 @@ class CryptoChartApp:
         self.root.configure(bg=bg_color)
         self.root.title("📈 Crypto Professional Charts")
 
-        # Header
+        # Header - Row 0
         header_frame = tk.Frame(self.root, bg=bg_color)
-        header_frame.pack(fill="x", padx=20, pady=10)
+        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=10)
 
-        tk.Label(
+        header_label = tk.Label(
             header_frame,
             text="📈 Crypto Professional Charts",
             font=("Segoe UI", 18, "bold"),
             fg=accent_color,
             bg=bg_color,
-        ).pack()
+        )
+        header_label.pack()
 
-        # Search frame
+        # Search frame - Row 1
         search_frame = tk.Frame(self.root, bg=card_color, relief="solid", bd=1)
-        search_frame.pack(fill="x", padx=20, pady=10, ipady=10)
+        search_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=10, ipady=10)
+
+        # Container para centralizar conteúdo
+        search_container = tk.Frame(search_frame, bg=card_color)
+        search_container.pack(expand=True, fill="x", padx=20)
 
         tk.Label(
-            search_frame,
+            search_container,
             text="🔍 Buscar Criptomoeda:",
             font=("Segoe UI", 12, "bold"),
             fg=text_color,
@@ -56,7 +280,7 @@ class CryptoChartApp:
         ).pack(pady=5)
 
         self.search_entry = tk.Entry(
-            search_frame,
+            search_container,
             font=("Segoe UI", 12),
             width=30,
             relief="solid",
@@ -70,7 +294,7 @@ class CryptoChartApp:
         self.search_entry.bind("<Return>", lambda e: self.search_crypto())
 
         # Buttons frame
-        buttons_frame = tk.Frame(search_frame, bg=card_color)
+        buttons_frame = tk.Frame(search_container, bg=card_color)
         buttons_frame.pack(pady=10)
 
         tk.Button(
@@ -101,8 +325,84 @@ class CryptoChartApp:
             cursor="hand2",
         ).pack(side="left", padx=5)
 
+        # Botão de histórico
+        tk.Button(
+            buttons_frame,
+            text="📊 Histórico",
+            command=self.show_history_window,
+            font=("Segoe UI", 11, "bold"),
+            bg="#fab387",
+            fg="#1e1e2e",
+            relief="flat",
+            activebackground="#f9e2af",
+            padx=20,
+            pady=8,
+            cursor="hand2",
+        ).pack(side="left", padx=5)
+
+        # Botão para limpar cache
+        tk.Button(
+            buttons_frame,
+            text="🗑️ Limpar Cache",
+            command=self.force_clear_cache,
+            font=("Segoe UI", 11, "bold"),
+            bg="#f38ba8",
+            fg="#1e1e2e",
+            relief="flat",
+            activebackground="#eba0ac",
+            padx=20,
+            pady=8,
+            cursor="hand2",
+        ).pack(side="left", padx=5)
+
+        # Chart type selector - REMOVIDO, sempre candlestick
+        # chart_type_frame = tk.Frame(search_container, bg=card_color)
+        # chart_type_frame.pack(pady=5)
+
+        # tk.Label(
+        #     chart_type_frame,
+        #     text="📈 Tipo de Gráfico:",
+        #     font=("Segoe UI", 10, "bold"),
+        #     fg=text_color,
+        #     bg=card_color,
+        # ).pack(side="left", padx=5)
+
+        # # Definir valor padrão baseado na disponibilidade do mplfinance
+        # default_chart_type = "candlestick" if MPLFINANCE_AVAILABLE else "line"
+        # self.chart_type_var = tk.StringVar(value=default_chart_type)
+        
+        # candlestick_radio = tk.Radiobutton(
+        #     chart_type_frame,
+        #     text="Candlestick",
+        #     variable=self.chart_type_var,
+        #     value="candlestick",
+        #     command=self.on_chart_type_change,
+        #     font=("Segoe UI", 9),
+        #     fg=text_color if MPLFINANCE_AVAILABLE else "#585b70",
+        #     bg=card_color,
+        #     selectcolor="#45475a",
+        #     activebackground=card_color,
+        #     activeforeground=text_color if MPLFINANCE_AVAILABLE else "#585b70",
+        #     state="normal" if MPLFINANCE_AVAILABLE else "disabled",
+        # )
+        # candlestick_radio.pack(side="left", padx=5)
+
+        # tk.Radiobutton(
+        #     chart_type_frame,
+        #     text="Linha",
+        #     variable=self.chart_type_var,
+        #     value="line",
+        #     command=self.on_chart_type_change,
+        #     font=("Segoe UI", 9),
+        #     fg=text_color,
+        #     bg=card_color,
+        #     selectcolor="#45475a",
+        #     activebackground=card_color,
+        #     activeforeground=text_color,
+        # ).pack(side="left", padx=5)
+
         # Quick access buttons
-        quick_frame = tk.Frame(search_frame, bg=card_color)
+        quick_frame = tk.Frame(search_container, bg=card_color)
         quick_frame.pack(pady=5)
 
         tk.Label(
@@ -139,9 +439,9 @@ class CryptoChartApp:
                 cursor="hand2",
             ).pack(side="left", padx=2)
 
-        # Info frame
+        # Info frame - Row 2
         self.info_frame = tk.Frame(self.root, bg=card_color, relief="solid", bd=1)
-        self.info_frame.pack(fill="x", padx=20, pady=10, ipady=10)
+        self.info_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=10, ipady=10)
 
         self.info_label = tk.Label(
             self.info_frame,
@@ -150,16 +450,17 @@ class CryptoChartApp:
             fg=text_color,
             bg=card_color,
             justify="center",
+            wraplength=600,  # Quebra de linha responsiva
         )
-        self.info_label.pack(pady=10)
+        self.info_label.pack(pady=10, padx=20)
 
-        # Chart frame
+        # Chart frame - Row 3 (expandable)
         self.chart_frame = tk.Frame(self.root, bg=bg_color)
-        self.chart_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        self.chart_frame.grid(row=3, column=0, sticky="nsew", padx=20, pady=10)
 
-        # Status frame
+        # Status frame - Row 4
         self.status_frame = tk.Frame(self.root, bg=card_color, relief="solid", bd=1)
-        self.status_frame.pack(fill="x", padx=20, pady=(0, 20), ipady=5)
+        self.status_frame.grid(row=4, column=0, sticky="ew", padx=20, pady=(0, 20), ipady=5)
 
         self.status_label = tk.Label(
             self.status_frame,
@@ -170,6 +471,40 @@ class CryptoChartApp:
         )
         self.status_label.pack(pady=5)
 
+        # Configurar redimensionamento responsivo
+        self.root.bind('<Configure>', self.on_window_resize)
+
+    def on_chart_type_change(self):
+        """Manipula mudança no tipo de gráfico - REMOVIDO"""
+        # self.chart_type = self.chart_type_var.get()
+        # if self.current_crypto:
+        #     self.refresh_chart()
+        pass
+
+    def on_window_resize(self, event):
+        """Manipula o redimensionamento da janela"""
+        if event.widget == self.root:
+            # Ajustar wraplength do info_label baseado na largura da janela
+            new_width = min(event.width - 80, 800)  # Máximo de 800px
+            self.info_label.configure(wraplength=new_width)
+            
+            # Redimensionar gráfico se necessário
+            if self.chart_canvas:
+                self.resize_chart()
+
+    def resize_chart(self):
+        """Redimensiona o gráfico para se adaptar à janela"""
+        if self.chart_canvas:
+            # Obter dimensões do frame do gráfico
+            chart_width = self.chart_frame.winfo_width()
+            chart_height = self.chart_frame.winfo_height()
+            
+            if chart_width > 100 and chart_height > 100:
+                # Ajustar tamanho da figura baseado no tamanho da janela
+                fig = self.chart_canvas.figure
+                fig.set_size_inches(chart_width/100, chart_height/100)
+                self.chart_canvas.draw()
+
     def quick_search(self, crypto_id):
         """Busca rápida para criptomoedas populares"""
         self.search_entry.delete(0, tk.END)
@@ -178,34 +513,47 @@ class CryptoChartApp:
 
     def search_crypto(self):
         """Busca e exibe dados da criptomoeda"""
-        crypto = self.search_entry.get().lower().strip()
-        if not crypto:
-            self.show_error("Por favor, digite o nome de uma criptomoeda")
-            return
+        try:
+            crypto = self.search_entry.get().lower().strip()
+            if not crypto:
+                self.show_error("Por favor, digite o nome de uma criptomoeda")
+                return
 
-        self.current_crypto = crypto
-        self.status_label.config(text="🔄 Buscando dados...", fg="#f9e2af")
-        self.root.update()
+            self.current_crypto = crypto
+            self.status_label.config(text="🔄 Buscando dados...", fg="#f9e2af")
+            self.root.update()
 
-        # Buscar preço atual
-        current_price = self.get_current_price(crypto)
-        if not current_price:
-            self.show_error("❌ Criptomoeda não encontrada ou erro na API")
-            return
+            # Buscar preço atual
+            current_price = self.get_current_price(crypto)
+            if not current_price:
+                self.show_error("❌ Criptomoeda não encontrada ou erro na API")
+                return
 
-        # Buscar dados históricos
-        historical_data = self.get_historical_data(crypto)
-        if not historical_data:
-            self.show_error("❌ Erro ao buscar dados históricos. Aguarde um momento e tente novamente!.")
-            return
+            # Buscar dados históricos
+            historical_data = self.get_historical_data(crypto)
+            if not historical_data or not historical_data.get("prices"):
+                self.show_error("❌ Erro ao buscar dados históricos. Aguarde um momento e tente novamente!.")
+                return
 
-        # Atualizar informações
-        self.update_info(crypto, current_price)
+            # Salvar no histórico
+            try:
+                self.save_search_history(crypto, current_price)
+            except Exception as e:
+                print(f"Erro ao salvar histórico: {e}")
 
-        # Criar gráfico profissional
-        self.create_professional_chart(crypto, historical_data, current_price)
+            # Atualizar informações
+            self.update_info(crypto, current_price)
 
-        self.status_label.config(text="✅ Dados atualizados com sucesso", fg="#a6e3a1")
+            # Criar gráfico profissional - sempre candlestick
+            self.chart_type = "candlestick"
+            self.create_professional_chart(crypto, historical_data, current_price)
+
+            self.status_label.config(text="✅ Dados atualizados com sucesso", fg="#a6e3a1")
+            
+        except Exception as e:
+            print(f"Erro geral na busca: {e}")
+            self.show_error("❌ Erro inesperado. Tente novamente.")
+            self.status_label.config(text="❌ Erro", fg="#f38ba8")
 
     def refresh_chart(self):
         """Atualiza o gráfico atual"""
@@ -223,38 +571,41 @@ class CryptoChartApp:
             "include_24hr_vol": "true",
         }
 
-        try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-
-            if crypto_id in data:
-                return data[crypto_id]
-            return None
-
-        except Exception as e:
-            print(f"Erro ao buscar preço: {e}")
-            return None
+        data = self.make_api_request(url, params)
+        if data and crypto_id in data:
+            return data[crypto_id]
+        return None
 
     def get_historical_data(self, crypto_id, days=30):
         """Busca dados históricos da criptomoeda"""
         url = f"https://api.coingecko.com/api/v3/coins/{crypto_id}/market_chart"
         params = {"vs_currency": "usd", "days": days, "interval": "daily"}
 
-        try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-
+        data = self.make_api_request(url, params)
+        if data:
             return {
                 "prices": data.get("prices", []),
                 "market_caps": data.get("market_caps", []),
                 "total_volumes": data.get("total_volumes", []),
             }
+        return None
 
-        except Exception as e:
-            print(f"Erro ao buscar histórico: {e}")
-            return None
+    def get_ohlc_data(self, crypto_id, days=30):
+        """Busca dados OHLC para candlestick"""
+        url = f"https://api.coingecko.com/api/v3/coins/{crypto_id}/ohlc"
+        params = {"vs_currency": "usd", "days": days}
+
+        data = self.make_api_request(url, params)
+        if data:
+            # Converter para formato OHLC
+            ohlc_data = []
+            for candle in data:
+                timestamp, open_price, high, low, close = candle
+                date = datetime.fromtimestamp(timestamp / 1000)
+                ohlc_data.append([date, open_price, high, low, close])
+
+            return ohlc_data
+        return None
 
     def update_info(self, crypto_name, price_data):
         """Atualiza informações da criptomoeda"""
@@ -290,131 +641,94 @@ class CryptoChartApp:
 
     def create_professional_chart(self, crypto_name, data, current_price):
         """Cria gráfico profissional com múltiplas visualizações"""
-        # Limpar gráfico anterior
+        # Limpar gráfico anterior de forma mais robusta
         for widget in self.chart_frame.winfo_children():
-            widget.destroy()
+            try:
+                widget.destroy()
+            except Exception as e:
+                print(f"Erro ao destruir widget: {e}")
+        
+        # Limpar canvas anterior se existir
+        if hasattr(self, 'chart_canvas') and self.chart_canvas:
+            try:
+                self.chart_canvas.get_tk_widget().destroy()
+                self.chart_canvas = None
+            except Exception as e:
+                print(f"Erro ao destruir canvas: {e}")
 
         prices = data["prices"]
         volumes = data["total_volumes"]
 
         if not prices:
+            self.show_error("❌ Dados de preços não disponíveis")
             return
 
-        # Preparar dados
-        dates = [datetime.fromtimestamp(p[0] / 1000) for p in prices]
-        price_values = [p[1] for p in prices]
-        volume_values = [v[1] for v in volumes] if volumes else []
+        # Obter dimensões do frame para responsividade
+        chart_width = max(self.chart_frame.winfo_width(), 800)
+        chart_height = max(self.chart_frame.winfo_height(), 600)
+        
+        # Calcular tamanho da figura baseado no tamanho da janela
+        fig_width = max(chart_width / 100, 16)
+        fig_height = max(chart_height / 100, 12)
 
-        # Criar figura com subplots
+        # Criar figura com subplots - Tamanho responsivo
         fig, (ax1, ax2) = plt.subplots(
             2,
             1,
-            figsize=(12, 10),
-            gridspec_kw={"height_ratios": [3, 1]},
+            figsize=(fig_width, fig_height),
+            gridspec_kw={"height_ratios": [4, 1.5]},
             facecolor="#1e1e2e",
         )
 
         # Configurar cores do tema escuro
         fig.patch.set_facecolor("#1e1e2e")
-
-        # Gráfico de preços (subplot superior)
         ax1.set_facecolor("#313244")
 
-        # Linha principal do preço
-        line = ax1.plot(
-            dates,
-            price_values,
-            linewidth=2.5,
-            color="#89b4fa",
-            label=f"{crypto_name.upper()} Price",
-            alpha=0.9,
-        )[0]
-
-        # Área preenchida sob a linha
-        ax1.fill_between(dates, price_values, alpha=0.3, color="#89b4fa")
-
-        # Adicionar pontos de máximo e mínimo
-        max_price = max(price_values)
-        min_price = min(price_values)
-        max_idx = price_values.index(max_price)
-        min_idx = price_values.index(min_price)
-
-        ax1.scatter(
-            [dates[max_idx]],
-            [max_price],
-            color="#a6e3a1",
-            s=100,
-            zorder=5,
-            label=f"Máximo: ${max_price:.4f}",
-        )
-        ax1.scatter(
-            [dates[min_idx]],
-            [min_price],
-            color="#f38ba8",
-            s=100,
-            zorder=5,
-            label=f"Mínimo: ${min_price:.4f}",
-        )
-
-        # Linha de preço atual
-        current_usd = current_price.get("usd", price_values[-1])
-        ax1.axhline(
-            y=current_usd,
-            color="#f9e2af",
-            linestyle="--",
-            linewidth=2,
-            alpha=0.8,
-            label=f"Atual: ${current_usd:.4f}",
-        )
-
-        # Configurações do eixo de preços
-        ax1.set_title(
-            f"📈 {crypto_name.upper()} - Análise de Preço (30 dias)",
-            fontsize=16,
-            fontweight="bold",
-            color="#cdd6f4",
-            pad=20,
-        )
-        ax1.set_ylabel("Preço (USD)", fontsize=12, color="#cdd6f4")
-        ax1.tick_params(colors="#cdd6f4")
-        ax1.grid(True, alpha=0.3, color="#585b70")
-        ax1.legend(
-            loc="upper left",
-            facecolor="#45475a",
-            edgecolor="none",
-            labelcolor="#cdd6f4",
-        )
-
-        # Formatação do eixo Y para preços
-        ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"${x:,.4f}"))
+        # Sempre tentar candlestick, se não conseguir mostrar mensagem de erro
+        if MPLFINANCE_AVAILABLE:
+            try:
+                self.create_candlestick_chart(ax1, crypto_name, fig_width)
+                # Se candlestick não desenhou nada, mostrar mensagem
+                if not ax1.get_lines() and not ax1.collections:
+                    self.show_error("❌ Aguarde 1 minuto para fazer uma nova requisição.")
+                    return
+            except Exception as e:
+                print(f"Erro ao criar candlestick: {e}")
+                self.show_error("❌  Aguarde 1 minuto para fazer uma nova requisição.")
+                return
+        else:
+            self.show_error("❌  Aguarde 1 minuto para fazer uma nova requisição.")
+            return
 
         # Gráfico de volume (subplot inferior)
-        if volume_values:
+        if volumes:
             ax2.set_facecolor("#313244")
             bars = ax2.bar(
-                dates,
-                volume_values,
+                [datetime.fromtimestamp(p[0] / 1000) for p in prices],
+                [v[1] for v in volumes],
                 color="#fab387",
                 alpha=0.7,
-                width=0.8,
+                width=0.5,
                 label="Volume 24h",
             )
 
             # Destacar barras de maior volume
+            volume_values = [v[1] for v in volumes]
             avg_volume = np.mean(volume_values)
             for i, (bar, vol) in enumerate(zip(bars, volume_values)):
                 if vol > avg_volume * 1.5:
                     bar.set_color("#a6e3a1")
                     bar.set_alpha(0.9)
 
-            ax2.set_ylabel("Volume (USD)", fontsize=12, color="#cdd6f4")
-            ax2.tick_params(colors="#cdd6f4")
+            ax2.set_ylabel("Volume (USD)", fontsize=fig_width-8, color="#cdd6f4")
+            ax2.tick_params(colors="#cdd6f4", labelsize=fig_width-10)
             ax2.grid(True, alpha=0.3, color="#585b70")
             ax2.legend(
                 loc="upper left",
                 facecolor="#45475a",
                 edgecolor="none",
                 labelcolor="#cdd6f4",
+                fontsize=fig_width-10,
             )
 
             # Formatação do eixo Y para volume
@@ -425,7 +739,7 @@ class CryptoChartApp:
             )
 
         # Configuração do eixo X (datas)
-        ax2.set_xlabel("Data", fontsize=12, color="#cdd6f4")
+        ax2.set_xlabel("Data", fontsize=fig_width-8, color="#cdd6f4")
 
         # Formatação das datas
         date_formatter = DateFormatter("%d/%m")
@@ -436,8 +750,8 @@ class CryptoChartApp:
         plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
         plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
 
-        # Ajustar layout
-        plt.tight_layout()
+        # Ajustar layout com mais espaço para o título
+        plt.tight_layout(pad=6.0)
 
         # Adicionar ao Tkinter
         canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
@@ -446,10 +760,129 @@ class CryptoChartApp:
 
         self.chart_canvas = canvas
 
+    def create_candlestick_chart(self, ax, crypto_name, fig_width):
+        """Cria gráfico de candlestick"""
+        # Verificar se mplfinance está disponível
+        if not MPLFINANCE_AVAILABLE:
+            print("mplfinance não disponível, usando gráfico de linha")
+            return
+        # Buscar dados OHLC
+        ohlc_data = self.get_ohlc_data(self.current_crypto)
+        if not ohlc_data:
+            print("Dados OHLC não disponíveis, usando gráfico de linha")
+            return
+        # Preparar dados para candlestick
+        dates = [candle[0] for candle in ohlc_data]
+        ohlc_values = []
+        for candle in ohlc_data:
+            date, open_price, high, low, close = candle
+            date_num = mpdates.date2num(date)
+            ohlc_values.append([date_num, open_price, high, low, close])
+        try:
+            candlestick_ohlc(
+                ax,
+                ohlc_values,
+                width=0.6,
+                colorup="#a6e3a1",
+                colordown="#f38ba8",
+                alpha=0.9,
+            )
+            font_size = min(24, max(16, fig_width * 0.8))
+            ax.set_title(f"Candlestick - {crypto_name.upper()} (USD)", fontsize=font_size, color="#89b4fa", pad=50, y=1.02)
+            ax.set_ylabel("Preço (USD)", fontsize=font_size-8, color="#cdd6f4")
+            ax.tick_params(colors="#cdd6f4", labelsize=font_size-10)
+            ax.grid(True, alpha=0.3, color="#585b70")
+        except Exception as e:
+            print(f"Erro ao desenhar candlestick: {e}")
+            # Não faz fallback para linha, apenas retorna
+            return
+
+    def create_line_chart(self, ax, crypto_name, prices, current_price, fig_width):
+        """Cria gráfico de linha"""
+        # Preparar dados
+        dates = [datetime.fromtimestamp(p[0] / 1000) for p in prices]
+        price_values = [p[1] for p in prices]
+
+        # Linha principal do preço
+        line = ax.plot(
+            dates,
+            price_values,
+            linewidth=3,
+            color="#89b4fa",
+            label=f"{crypto_name.upper()} Price",
+            alpha=0.9,
+        )[0]
+
+        # Área preenchida sob a linha
+        ax.fill_between(dates, price_values, alpha=0.3, color="#89b4fa")
+
+        # Adicionar pontos de máximo e mínimo
+        max_price = max(price_values)
+        min_price = min(price_values)
+        max_idx = price_values.index(max_price)
+        min_idx = price_values.index(min_price)
+
+        ax.scatter(
+            [dates[max_idx]],
+            [max_price],
+            color="#a6e3a1",
+            s=150,
+            zorder=5,
+            label=f"Máximo: ${max_price:.4f}",
+        )
+        ax.scatter(
+            [dates[min_idx]],
+            [min_price],
+            color="#f38ba8",
+            s=150,
+            zorder=5,
+            label=f"Mínimo: ${min_price:.4f}",
+        )
+
+        # Linha de preço atual
+        current_usd = current_price.get("usd", price_values[-1])
+        ax.axhline(
+            y=current_usd,
+            color="#f9e2af",
+            linestyle="--",
+            linewidth=3,
+            alpha=0.8,
+            label=f"Atual: ${current_usd:.4f}",
+        )
+
+        # Configurações do gráfico
+        font_size = min(24, max(16, fig_width * 0.8))
+        ax.set_title(
+            f"📈 {crypto_name.upper()} - Análise de Preço (30 dias)",
+            fontsize=font_size,
+            fontweight="bold",
+            color="#cdd6f4",
+            pad=50,
+            y=1.02,
+        )
+        ax.set_ylabel("Preço (USD)", fontsize=font_size-8, color="#cdd6f4")
+        ax.tick_params(colors="#cdd6f4", labelsize=font_size-10)
+        ax.grid(True, alpha=0.3, color="#585b70")
+        ax.legend(
+            loc="upper left",
+            facecolor="#45475a",
+            edgecolor="none",
+            labelcolor="#cdd6f4",
+            fontsize=font_size-10,
+        )
+
+        # Formatação do eixo Y para preços
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"${x:,.4f}"))
+
     def show_error(self, message):
         """Exibe mensagem de erro"""
         self.info_label.config(text=message, fg="#f38ba8")
         self.status_label.config(text="❌ Erro", fg="#f38ba8")
+
+    def __del__(self):
+        """Destrutor para fechar conexão com banco de dados"""
+        if hasattr(self, 'conn'):
+            self.conn.close()
 
 
 def mostrar_tela_cotacao_melhorada(root, voltar_tela=None):
@@ -462,7 +895,7 @@ def mostrar_tela_cotacao_melhorada(root, voltar_tela=None):
     # Botão voltar se fornecido
     if voltar_tela:
         voltar_frame = tk.Frame(root, bg="#1e1e2e")
-        voltar_frame.pack(fill="x", padx=20, pady=10)
+        voltar_frame.grid(row=0, column=0, sticky="w", padx=20, pady=10)
 
         tk.Button(
             voltar_frame,
@@ -485,8 +918,8 @@ def mostrar_tela_cotacao_melhorada(root, voltar_tela=None):
 # Exemplo de uso
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("1000x800")
-    root.minsize(800, 600)
+    root.geometry("1920x1080")
+    root.minsize(1200, 800)  # Tamanho mínimo responsivo
 
     mostrar_tela_cotacao_melhorada(root)
 

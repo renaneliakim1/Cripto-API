@@ -7,7 +7,7 @@ from gui.tela_cotacao import mostrar_tela_cotacao_melhorada
 def main():
     app = tk.Tk()
     app.title("CryptoApp")
-    app.geometry("350x300")
+    app.geometry("600x600")
 
     # CAMINHO PARA O ÍCONE (certifique-se que o arquivo iconB.ico está em assets/)
     icone_path = os.path.join("assets", "bitcoin.ico")
