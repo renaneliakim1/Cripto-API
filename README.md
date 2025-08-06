@@ -6,9 +6,10 @@
 
 O CryptoApp é uma aplicação desktop desenvolvida em Python utilizando a biblioteca tkinter para a interface gráfica. O objetivo principal do aplicativo é fornecer aos usuários cotações de criptomoedas em tempo real, permitindo-lhes acompanhar o mercado de forma simples e intuitiva. A aplicação é projetada para ser fácil de usar e visualmente agradável, com um foco na experiência do usuário.
 
-<p align="center">
-  <img alt="" src="/.github/gif.gif" width="100%">
-</p>
+
+
+
+![Demonstração do Projeto](.github/gif.gif)
 
 
 ⚠️ Limitações Conhecidas
