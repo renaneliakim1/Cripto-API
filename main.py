@@ -11,7 +11,7 @@ def main():
 
     # CAMINHO PARA O ÍCONE (certifique-se que o arquivo iconB.ico está em assets/)
     icone_path = os.path.join("assets", "bitcoin.ico")
-    app.iconbitmap(icone_path)  # AQUI aplica o ícone
+    app.iconbitmap(icone_path) 
 
 
     def ir_para_cotacao():
@@ -23,6 +23,8 @@ def main():
 
     mostrar_tela_inicial(app, ir_para_cotacao)
     app.mainloop()
+
+
 
 
 if __name__ == "__main__":

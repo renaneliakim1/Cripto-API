@@ -72,4 +72,6 @@ def mostrar_tela_inicial(root, mudar_tela):
         bg="#1e213d",  
         anchor="center"
     )
+
+    
     footer.pack(side="bottom", fill="x")

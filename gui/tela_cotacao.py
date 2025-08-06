@@ -11,7 +11,7 @@ import seaborn as sns
 import sqlite3
 import os
 import matplotlib.dates as mpdates
-import time  # Adicionar para rate limiting
+import time 
 
 # Tentar importar mplfinance, se não conseguir, usar implementação alternativa
 try:
@@ -21,7 +21,6 @@ except ImportError:
     MPLFINANCE_AVAILABLE = False
     print("mplfinance não disponível, usando gráficos de linha apenas")
 
-# Configurar estilo profissional para os gráficos
 plt.style.use("seaborn-v0_8-darkgrid")
 sns.set_palette("husl")
 
@@ -31,34 +30,28 @@ class CryptoChartApp:
         self.root = root
         self.current_crypto = "bitcoin"
         self.chart_canvas = None
-        self.chart_type = "candlestick"  # Sempre candlestick
-        self.cache = {}  # Cache para dados da API
-        self.last_request_time = 0  # Controle de rate limiting
+        self.chart_type = "candlestick"  # era pra ser candlestick mas nao carrega
+        self.cache = {}
+        self.last_request_time = 0  
         self.setup_database()
         self.setup_ui()
         self.setup_responsive_layout()
         
-        # Limpar cache periodicamente para evitar vazamento de memória
-        self.root.after(300000, self.clear_old_cache)  # Limpar a cada 5 minutos
-
+        self.root.after(300000, self.clear_old_cache) 
     def make_api_request(self, url, params=None, max_retries=2):
         """Faz requisição à API com cache e rate limiting otimizado"""
-        # Criar chave do cache
         cache_key = f"{url}_{str(params)}"
         
-        # Verificar cache (válido por 5 minutos para melhor performance)
         current_time = time.time()
         if cache_key in self.cache:
             cached_data, cache_time = self.cache[cache_key]
             if current_time - cache_time < 300:  # Cache válido por 5 minutos
                 return cached_data
         
-        # Rate limiting: esperar apenas 0.5 segundos entre requisições
         time_since_last = current_time - self.last_request_time
         if time_since_last < 0.5:
             time.sleep(0.5 - time_since_last)
         
-        # Fazer requisição com retry otimizado
         for attempt in range(max_retries):
             try:
                 response = requests.get(url, params=params, timeout=8)  # Timeout reduzido
@@ -355,53 +348,7 @@ class CryptoChartApp:
             cursor="hand2",
         ).pack(side="left", padx=5)
 
-        # Chart type selector - REMOVIDO, sempre candlestick
-        # chart_type_frame = tk.Frame(search_container, bg=card_color)
-        # chart_type_frame.pack(pady=5)
-
-        # tk.Label(
-        #     chart_type_frame,
-        #     text="📈 Tipo de Gráfico:",
-        #     font=("Segoe UI", 10, "bold"),
-        #     fg=text_color,
-        #     bg=card_color,
-        # ).pack(side="left", padx=5)
-
-        # # Definir valor padrão baseado na disponibilidade do mplfinance
-        # default_chart_type = "candlestick" if MPLFINANCE_AVAILABLE else "line"
-        # self.chart_type_var = tk.StringVar(value=default_chart_type)
-        
-        # candlestick_radio = tk.Radiobutton(
-        #     chart_type_frame,
-        #     text="Candlestick",
-        #     variable=self.chart_type_var,
-        #     value="candlestick",
-        #     command=self.on_chart_type_change,
-        #     font=("Segoe UI", 9),
-        #     fg=text_color if MPLFINANCE_AVAILABLE else "#585b70",
-        #     bg=card_color,
-        #     selectcolor="#45475a",
-        #     activebackground=card_color,
-        #     activeforeground=text_color if MPLFINANCE_AVAILABLE else "#585b70",
-        #     state="normal" if MPLFINANCE_AVAILABLE else "disabled",
-        # )
-        # candlestick_radio.pack(side="left", padx=5)
-
-        # tk.Radiobutton(
-        #     chart_type_frame,
-        #     text="Linha",
-        #     variable=self.chart_type_var,
-        #     value="line",
-        #     command=self.on_chart_type_change,
-        #     font=("Segoe UI", 9),
-        #     fg=text_color,
-        #     bg=card_color,
-        #     selectcolor="#45475a",
-        #     activebackground=card_color,
-        #     activeforeground=text_color,
-        # ).pack(side="left", padx=5)
-
-        # Quick access buttons
+     
         quick_frame = tk.Frame(search_container, bg=card_color)
         quick_frame.pack(pady=5)
 
@@ -471,36 +418,29 @@ class CryptoChartApp:
         )
         self.status_label.pack(pady=5)
 
-        # Configurar redimensionamento responsivo
         self.root.bind('<Configure>', self.on_window_resize)
 
     def on_chart_type_change(self):
         """Manipula mudança no tipo de gráfico - REMOVIDO"""
-        # self.chart_type = self.chart_type_var.get()
-        # if self.current_crypto:
-        #     self.refresh_chart()
+
         pass
 
     def on_window_resize(self, event):
         """Manipula o redimensionamento da janela"""
         if event.widget == self.root:
-            # Ajustar wraplength do info_label baseado na largura da janela
-            new_width = min(event.width - 80, 800)  # Máximo de 800px
+            new_width = min(event.width - 80, 800) 
             self.info_label.configure(wraplength=new_width)
             
-            # Redimensionar gráfico se necessário
             if self.chart_canvas:
                 self.resize_chart()
 
     def resize_chart(self):
         """Redimensiona o gráfico para se adaptar à janela"""
         if self.chart_canvas:
-            # Obter dimensões do frame do gráfico
             chart_width = self.chart_frame.winfo_width()
             chart_height = self.chart_frame.winfo_height()
             
             if chart_width > 100 and chart_height > 100:
-                # Ajustar tamanho da figura baseado no tamanho da janela
                 fig = self.chart_canvas.figure
                 fig.set_size_inches(chart_width/100, chart_height/100)
                 self.chart_canvas.draw()
@@ -615,7 +555,6 @@ class CryptoChartApp:
         market_cap = price_data.get("usd_market_cap", 0)
         volume_24h = price_data.get("usd_24h_vol", 0)
 
-        # Formatação de números
         def format_number(num):
             if num >= 1e9:
                 return f"{num/1e9:.2f}B"
@@ -641,14 +580,12 @@ class CryptoChartApp:
 
     def create_professional_chart(self, crypto_name, data, current_price):
         """Cria gráfico profissional com múltiplas visualizações"""
-        # Limpar gráfico anterior de forma mais robusta
         for widget in self.chart_frame.winfo_children():
             try:
                 widget.destroy()
             except Exception as e:
                 print(f"Erro ao destruir widget: {e}")
         
-        # Limpar canvas anterior se existir
         if hasattr(self, 'chart_canvas') and self.chart_canvas:
             try:
                 self.chart_canvas.get_tk_widget().destroy()
@@ -663,15 +600,12 @@ class CryptoChartApp:
             self.show_error("❌ Dados de preços não disponíveis")
             return
 
-        # Obter dimensões do frame para responsividade
         chart_width = max(self.chart_frame.winfo_width(), 800)
         chart_height = max(self.chart_frame.winfo_height(), 600)
         
-        # Calcular tamanho da figura baseado no tamanho da janela
         fig_width = max(chart_width / 100, 16)
         fig_height = max(chart_height / 100, 12)
 
-        # Criar figura com subplots - Tamanho responsivo
         fig, (ax1, ax2) = plt.subplots(
             2,
             1,
@@ -680,27 +614,22 @@ class CryptoChartApp:
             facecolor="#1e1e2e",
         )
 
-        # Configurar cores do tema escuro
         fig.patch.set_facecolor("#1e1e2e")
         ax1.set_facecolor("#313244")
 
-        # Sempre tentar candlestick, se não conseguir mostrar mensagem de erro
+        candlestick_ok = False
         if MPLFINANCE_AVAILABLE:
             try:
                 self.create_candlestick_chart(ax1, crypto_name, fig_width)
-                # Se candlestick não desenhou nada, mostrar mensagem
                 if not ax1.get_lines() and not ax1.collections:
-                    self.show_error("❌ Aguarde 1 minuto para fazer uma nova requisição.")
-                    return
+                    print("Candlestick vazio, fallback para linha.")
+                else:
+                    candlestick_ok = True
             except Exception as e:
                 print(f"Erro ao criar candlestick: {e}")
-                self.show_error("❌  Aguarde 1 minuto para fazer uma nova requisição.")
-                return
-        else:
-            self.show_error("❌  Aguarde 1 minuto para fazer uma nova requisição.")
-            return
+        if not candlestick_ok:
+            self.create_line_chart(ax1, crypto_name, prices, current_price, fig_width)
 
-        # Gráfico de volume (subplot inferior)
         if volumes:
             ax2.set_facecolor("#313244")
             bars = ax2.bar(
@@ -712,7 +641,6 @@ class CryptoChartApp:
                 label="Volume 24h",
             )
 
-            # Destacar barras de maior volume
             volume_values = [v[1] for v in volumes]
             avg_volume = np.mean(volume_values)
             for i, (bar, vol) in enumerate(zip(bars, volume_values)):
@@ -731,14 +659,12 @@ class CryptoChartApp:
                 fontsize=fig_width-10,
             )
 
-            # Formatação do eixo Y para volume
             ax2.yaxis.set_major_formatter(
                 plt.FuncFormatter(
                     lambda x, p: f"${x/1e9:.1f}B" if x >= 1e9 else f"${x/1e6:.1f}M"
                 )
             )
 
-        # Configuração do eixo X (datas)
         ax2.set_xlabel("Data", fontsize=fig_width-8, color="#cdd6f4")
 
         # Formatação das datas
